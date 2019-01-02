@@ -9,11 +9,7 @@
 #include <TaskScheduler.h>
 #include "Inputs.h"
 
-/*
-   python /Users/steve/Library/Arduino15/packages/esp8266/hardware/esp8266/2.2.0/tools/espota.py -i 192.168.0.48 -p 8266 --auth=EAdYGW81CskIXGzSYJBzdj5eeeUVdXT1JNeZj6GLeZ -f /var/folders/1v/srr92bkd24q3d5w_wx17hymr0000gn/T/build315f8e6936860c20a295485da5909e09.tmp/garage.ino.bin -d -r
-*/
-
-#define _GARAGE_DEBUG 1
+// #define _GARAGE_DEBUG 1
 
 // In
 #define closePin 5 // pushbutton connected to digital pin 7
@@ -30,36 +26,54 @@
 #define DHTPIN 14
 #define DHTTYPE DHT22
 #define DHTCYCLE 11
-#define DHTWAIT 300 // 5min
+#define DHTWAIT 300  // 5min
+
+#ifdef _GARAGE_DEBUG
 
 // Wait door
 #define DOORWAIT 10 // 300:5min
 #define ALERTWAIT 5 // 60:1min
 
+#else
+
+// Wait door
+#define DOORWAIT 300 // 300:5min
+#define ALERTWAIT 60 // 60:1min
+
+#endif
+
 Scheduler runner;
 
-void handleClosed();
-void readtemp();
-void notClosed();
-void infinite();
 void resetInfinite();
-void closed();
 
 //Tasks
-Task handleClosedTask(1000, TASK_FOREVER, &handleClosed, &runner, true);
+void ReadInputs();
+Task ReadInputsTask(250, TASK_FOREVER, &ReadInputs, &runner, true); // 1/4sec
+
+void handleClosed();
+Task handleClosedTask(500, TASK_FOREVER, &handleClosed, &runner, true);
+
+void readtemp();
 Task tempTask(DHTWAIT * 1000, TASK_FOREVER, &readtemp, &runner, true); // 5Min
 
+void infinite();
 Task infiniteTask(250, TASK_FOREVER, &infinite, &runner, true); // 1sec
 
-Task closedTask(4000, TASK_ONCE, &closed, &runner, false); // 4sec.
+void closed();
+Task closedTask(2000, TASK_ONCE, &closed, &runner, false); // 4sec.
 
+void notClosed();
 Task notClosedTask(0, 5, &notClosed, &runner, false); // 5Min
 
 bool alertEnable();
 void alertOn();
 void alertOff();
-Task alertWrapperTask(5000, TASK_ONCE, NULL, &runner, false, &alertEnable);
-Task alertTask(0, TASK_FOREVER, NULL, &runner, false);
+Task alertTask(500, 2, NULL, &runner, false, &alertEnable, &alertOff);
+
+void blinkOn();
+void blinkOff();
+bool blinkOnEnable();
+Task blink(250, 6, NULL, &runner, false, &blinkOnEnable, &blinkOff);
 
 Inputs _inputs;
 bool _neverGiveUp = false;
@@ -141,7 +155,7 @@ void handle_root()
   webString += "</body></html>";
 
   server.send(200, "text/html", webString);
-  delay(100);
+  //delay(100);
 }
 
 void setupAP()
@@ -223,33 +237,6 @@ void Disconnect()
   WiFi.mode(WIFI_OFF);
 }
 
-void ReadSerial()
-{
-  String readString = "";
-
-  while (Serial.available())
-  {
-    char c = Serial.read(); //gets one byte from serial buffer
-    readString += c;        //makes the String readString
-    delay(2);               //slow looping to allow buffer to fill with next character
-  }
-
-  if (readString.length() > 0)
-  {
-    readString.toUpperCase();
-    if (readString == "IP")
-    {
-      Serial.println(WiFi.localIP());
-    }
-    else if (readString == "CONNECT")
-    {
-      Connect();
-    }
-
-    readString = "";
-  }
-}
-
 void ReadInputs()
 {
 
@@ -257,7 +244,7 @@ void ReadInputs()
 #ifdef _GARAGE_DEBUG
   if (tmpOpen != _inputs.Open)
   {
-    Serial.println((std::string("Open: ") + (tmpOpen ? "NO" : "YES")).c_str());
+    Serial.println((std::string("Open: ") + (tmpOpen ? "YES" : "NO")).c_str());
   }
 #endif
   _inputs.Open = tmpOpen;
@@ -266,7 +253,7 @@ void ReadInputs()
 #ifdef _GARAGE_DEBUG
   if (tmpClosed != _inputs.Closed)
   {
-    Serial.println((std::string("Closed: ") + (tmpClosed ? "NO" : "YES")).c_str());
+    Serial.println((std::string("Closed: ") + (tmpClosed ? "YES" : "NO")).c_str());
   }
 #endif
   _inputs.Closed = tmpClosed;
@@ -275,7 +262,7 @@ void ReadInputs()
 #ifdef _GARAGE_DEBUG
   if (tmpInfinite != _inputs.Infinite)
   {
-    Serial.println((std::string("Infinite: ") + (tmpInfinite ? "NO" : "YES")).c_str());
+    Serial.println((std::string("Infinite: ") + (tmpInfinite ? "YES" : "NO")).c_str());
   }
 #endif
   _inputs.Infinite = tmpInfinite;
@@ -286,22 +273,39 @@ void handleClosed()
   bool closed = _inputs.Closed;
   bool open = _inputs.Open;
 
-  unsigned long waitTime = (closed || _infinite) ? 1000 : 500;
-  handleClosedTask.setInterval(waitTime);
-
   digitalWrite(statusPin, closed ? LOW : HIGH);
 
-  if (!_infinite)
+  if (!closed && closedTask.isEnabled())
   {
-    if (!closed && !notClosedTask.isEnabled())
-    {
-      notClosedTask.setInterval(DOORWAIT * 1000);
-      notClosedTask.restartDelayed();
-    }
-    else if (closed)
-    {
-      closedTask.restartDelayed();
-    }
+#ifdef _GARAGE_DEBUG
+    Serial.println("closedTask.disable();");
+#endif
+    closedTask.disable();
+  }
+
+  if (closed && notClosedTask.isEnabled() && !closedTask.isEnabled())
+  {
+#ifdef _GARAGE_DEBUG
+    Serial.println("closedTask.restartDelayed();");
+#endif
+    closedTask.restartDelayed();
+  }
+
+  if (closed && (_neverGiveUp || _infinite) && !closedTask.isEnabled())
+  {
+#ifdef _GARAGE_DEBUG
+    Serial.println("closed && (_neverGiveUp || _infinite)");
+#endif
+    closedTask.restartDelayed();
+  }
+
+  if (!_infinite && !_neverGiveUp && !closed && !notClosedTask.isEnabled())
+  {
+#ifdef _GARAGE_DEBUG
+    Serial.println("notClosedTask.restartDelayed();");
+#endif
+    notClosedTask.setInterval(DOORWAIT * 1000);
+    notClosedTask.restartDelayed();
   }
 
   if (!open)
@@ -309,24 +313,16 @@ void handleClosed()
     // reset infinite if not open
     resetInfinite();
   }
-
-  //     else if (retryCounter >= 6)
-  //     {
-  //       // send alert
-  //       for (int count = 0; count < 3; count++)
-  //       {
-  //         digitalWrite(ledPin, HIGH);
-  //         delay(250);
-  //         digitalWrite(ledPin, LOW);
-  //         delay(250);
-  //       }
-  //     }
 }
 
 void closed()
 {
+#ifdef _GARAGE_DEBUG
+  Serial.println("closed()");
+#endif
   notClosedTask.disable();
   _neverGiveUp = false;
+  _infinite = false;
 }
 
 void notClosed()
@@ -337,30 +333,34 @@ void notClosed()
   // The door has not been closed correctly
   if (!_inputs.Closed)
   {
-    if (notClosedTask.isLastIteration() && !_inputs.Open)
+    if (notClosedTask.isLastIteration())
     {
 // Unable to close it, let it go
 #ifdef _GARAGE_DEBUG
       Serial.println("Never give Up!");
 #endif
       _neverGiveUp = true;
-      return;
-    }
-    else
-    {
-      if (notClosedTask.isFirstIteration())
+
+      if (!_inputs.Open)
       {
-#ifdef _GARAGE_DEBUG
-        Serial.println("notClosed() - ALERTWAIT");
-#endif
-        notClosedTask.setInterval(ALERTWAIT * 1000);
+
+        // !!! TODO SEND ANDROID ALERT !!!
+
+        return;
       }
+    }
+    else if (notClosedTask.isFirstIteration())
+    {
+#ifdef _GARAGE_DEBUG
+      Serial.println("notClosed() - ALERTWAIT");
+#endif
+      notClosedTask.setInterval(ALERTWAIT * 1000);
+    }
 
 #ifdef _GARAGE_DEBUG
-      Serial.println("alertWrapperTask.enable()");
+    Serial.println("alertTask.restart();");
 #endif
-      alertWrapperTask.enable();
-    }
+    alertTask.restart();
   }
 }
 
@@ -370,9 +370,7 @@ bool alertEnable()
   Serial.println("alertEnable()");
 #endif
 
-  alertTask.setInterval(500);
   alertTask.setCallback(&alertOn);
-  alertTask.enable();
 
   return true; // Task should be enabled
 }
@@ -394,7 +392,7 @@ void alertOff()
 #endif
   digitalWrite(alertPin, LOW);
   digitalWrite(ledPin, LOW);
-  alertTask.disable();
+  //alertTask.disable();
 }
 
 void infinite()
@@ -416,8 +414,27 @@ void infinite()
 #ifdef _GARAGE_DEBUG
       Serial.println("Infinite Fail !!!");
 #endif
+      blink.restart();
     }
   }
+}
+
+bool blinkOnEnable()
+{
+  blink.setCallback(&blinkOn);
+
+  return true; // Task should be enabled
+}
+
+void blinkOn()
+{
+  digitalWrite(ledPin, HIGH);
+  blink.setCallback(&blinkOff);
+}
+void blinkOff()
+{
+  digitalWrite(ledPin, LOW);
+  blink.setCallback(&blinkOn);
 }
 
 void resetInfinite()
@@ -524,12 +541,8 @@ void setup()
 
 void loop()
 {
-  ReadInputs();
-
-  ReadSerial();
+  runner.execute();
 
   server.handleClient();
   ArduinoOTA.handle();
-
-  runner.execute();
 }
