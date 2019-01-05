@@ -84,15 +84,15 @@ DHT dht(DHTPIN, DHTTYPE, DHTCYCLE);
 float humidity, temp_f, hic; // Values read from sensor
 
 // Web Server
-#define ssid "MootCity-2G"
-#define password "EAdYGW81CskIXGzSYJBzdj5eeeUVdXT1JNeZj6GLeZ"
+#define ssid "MootCity-OuterLimit"
+#define password "LXMFaab8wvX8JjUfRPmscL9NQ25qMWEGRG3x4vRdxX"
 #define timeoutWifi 30
 
 ESP8266WebServer server(80);
 
 // OTA
 #define OTAPport 8266
-#define OTAPass "EAdYGW81CskIXGzSYJBzdj5eeeUVdXT1JNeZj6GLeZ"
+#define OTAPass "LXMFaab8wvX8JjUfRPmscL9NQ25qMWEGRG3x4vRdxX"
 
 #define host "ESP-Garage"
 
@@ -109,6 +109,8 @@ void handle_root()
   webString += WiFi.SSID();
   webString += " RSSI: ";
   webString += WiFi.RSSI();
+  webString += " IP: ";
+  webString += WiFi.localIP().toString();
 
   // Temp
   webString += "<br /> ";
