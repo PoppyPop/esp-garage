@@ -8,8 +8,32 @@
 #include <ESP8266mDNS.h>
 #include <TaskScheduler.h>
 #include "Inputs.h"
+#include <EEPROM.h>
+#include "save.h"
 
 // #define _GARAGE_DEBUG 1
+// #define _WEB_DEBUG 1
+
+// EEPROM
+#define eepromInitAddr 0L
+
+#define eepromInitData 'T'
+
+#define eepromDataAddr 1L
+unsigned long averageTimeOpen = 0;
+unsigned long currentMillisOpen = 0;
+
+#define eepromDataOpenAddr 10L
+unsigned long averageTimeToOpen = 0;
+unsigned long currentMillisToOpen = 0;
+
+#ifdef _WEB_DEBUG
+
+bool eepromInit = false;
+unsigned int eepromInitValue = 0;
+unsigned long eepromInitDataValue = 0UL;
+
+#endif
 
 // In
 #define closePin 5 // pushbutton connected to digital pin 7
@@ -26,7 +50,7 @@
 #define DHTPIN 14
 #define DHTTYPE DHT22
 #define DHTCYCLE 11
-#define DHTWAIT 300  // 5min
+#define DHTWAIT 300 // 5min
 
 #ifdef _GARAGE_DEBUG
 
@@ -79,6 +103,12 @@ Inputs _inputs;
 bool _neverGiveUp = false;
 bool _infinite = false;
 
+const unsigned int OPEN_ALERT_NONE = 0;
+const unsigned int OPEN_ALERT_FIRST = 1;
+const unsigned int OPEN_ALERT_REAL = 2;
+
+unsigned int _openAlertLevel = OPEN_ALERT_NONE;
+
 DHT dht(DHTPIN, DHTTYPE, DHTCYCLE);
 
 float humidity, temp_f, hic; // Values read from sensor
@@ -96,11 +126,132 @@ ESP8266WebServer server(80);
 
 #define host "ESP-Garage"
 
-void handle_root()
+unsigned long CurrentTimeOpen()
+{
+  if (currentMillisOpen > 0)
+  {
+    return (millis() - currentMillisOpen) / 1000;
+  }
+
+  return 0;
+}
+
+unsigned long CurrentTimeToOpen()
+{
+  if (currentMillisToOpen > 0)
+  {
+    return (millis() - currentMillisToOpen) / 1000;
+  }
+
+  return 0;
+}
+
+void UpdateAverageOpen(unsigned long currentOpen)
+{
+  if (averageTimeOpen == 0UL)
+  {
+    averageTimeOpen = currentOpen;
+  }
+  else
+  {
+    averageTimeOpen = (averageTimeOpen + currentOpen) / 2;
+  }
+
+  //EEPROMWritelong(eepromDataAddr, averageTimeOpen);
+  EEPROM_writeAnything(eepromDataAddr, averageTimeOpen);
+}
+
+void UpdateAverageToOpen(unsigned long current)
+{
+  if (averageTimeToOpen == 0UL)
+  {
+    averageTimeToOpen = current;
+  }
+  else
+  {
+    averageTimeToOpen = (averageTimeToOpen + current) / 2;
+  }
+
+  EEPROM_writeAnything(eepromDataOpenAddr, averageTimeToOpen);
+}
+
+String CalcState()
 {
 
-  //unsigned long current = millis() ;
+  if (_neverGiveUp)
+  {
+    return "NeverGiveUp";
+  }
 
+  if (_infinite)
+  {
+    return "Infinite";
+  }
+
+  if (_inputs.Closed)
+  {
+    return "Closed";
+  }
+  else if (_inputs.Open)
+  {
+    return "Open";
+  }
+  else if (!_inputs.Closed && !_inputs.Open)
+  {
+    return "Not Closed / Not Open";
+  }
+
+  return "Unknown";
+}
+
+void handle_Move()
+{
+  alertTask.restart();
+
+  String webString = "{";
+  webString += "\"Status\": \"OK\"";
+  webString += "}";
+
+  server.send(200, "application/json", webString);
+}
+
+void ResetAverage()
+{
+  averageTimeOpen = 0UL;
+  UpdateAverageOpen(0UL);
+  averageTimeToOpen = 0UL;
+  UpdateAverageToOpen(0UL);
+
+  EEPROM.commit();
+}
+
+void handle_ResetAverageOpen()
+{
+  ResetAverage();
+
+  String webString = "{";
+  webString += "\"Status\": \"OK\"";
+  webString += "}";
+
+  server.send(200, "application/json", webString);
+}
+
+void handle_openAlert()
+{
+  String webString = "{";
+
+  webString += "\"Status\": \"" + CalcState() + "\"";
+  webString += ",";
+
+  webString += "\"Alert\": " + String(_openAlertLevel);
+
+  webString += "}";
+
+  server.send(200, "application/json", webString);
+}
+
+void handle_root()
+{
   String webString = "<html><head><title>Garage ESP</title></head><body>"; // String to display
 
   // Wifi
@@ -123,6 +274,19 @@ void handle_root()
   webString += "Heat index: ";
   webString += String(hic);
   webString += " *C ";
+
+  webString += "<br /> ";
+  webString += "<br /> ";
+  webString += "State: <b>";
+  webString += CalcState();
+  webString += "</b>";
+
+  webString += "<br /> ";
+  webString += "Open Alert Level: <b>";
+  webString += _openAlertLevel;
+  webString += "</b>";
+
+  webString += "<br /> ";
 
   // Door Closed
   webString += "<br /> ";
@@ -153,6 +317,46 @@ void handle_root()
   webString += "<br /> ";
   webString += "notClosedTask: ";
   webString += notClosedTask.isEnabled() ? "Yes" : "No";
+
+  webString += "<br /> ";
+
+  // Average
+  webString += "<br /> ";
+  webString += "Average Open: ";
+  webString += averageTimeOpen;
+
+  // Current
+  webString += "<br /> ";
+  webString += "Current Open: ";
+  webString += CurrentTimeOpen();
+
+  webString += "<br /> ";
+
+  // Average
+  webString += "<br /> ";
+  webString += "Average To Open: ";
+  webString += averageTimeToOpen;
+
+  // Current
+  webString += "<br /> ";
+  webString += "Current To Open: ";
+  webString += CurrentTimeToOpen();
+
+#ifdef _WEB_DEBUG
+  webString += "<br /> ";
+  webString += "eepromInit: ";
+  webString += eepromInit ? "Yes" : "No";
+
+  webString += "<br /> ";
+  webString += "eeprom Init Value: ";
+  webString += eepromInitValue;
+
+  webString += "<br /> ";
+  webString += "eeprom Data Value: ";
+  webString += eepromInitDataValue;
+
+#endif
+  // eepromInit
 
   webString += "</body></html>";
 
@@ -306,14 +510,33 @@ void handleClosed()
 #ifdef _GARAGE_DEBUG
     Serial.println("notClosedTask.restartDelayed();");
 #endif
+
     notClosedTask.setInterval(DOORWAIT * 1000);
     notClosedTask.restartDelayed();
+
+    if (currentMillisOpen == 0)
+    {
+      currentMillisOpen = millis();
+    }
+
+    if (currentMillisToOpen == 0)
+    {
+      currentMillisToOpen = millis();
+    }
+
+    tempTask.disable();
   }
 
   if (!open)
   {
     // reset infinite if not open
     resetInfinite();
+  }
+  else if (currentMillisToOpen > 0UL)
+  {
+    // When open, save time to open
+    UpdateAverageToOpen(CurrentTimeToOpen());
+    currentMillisToOpen = 0UL;
   }
 }
 
@@ -325,6 +548,16 @@ void closed()
   notClosedTask.disable();
   _neverGiveUp = false;
   _infinite = false;
+  _openAlertLevel = OPEN_ALERT_NONE;
+
+  unsigned long currentOpen = CurrentTimeOpen();
+
+  UpdateAverageOpen(currentOpen);
+  currentMillisOpen = 0UL;
+
+  EEPROM.commit();
+
+  tempTask.restart();
 }
 
 void notClosed()
@@ -342,6 +575,7 @@ void notClosed()
       Serial.println("Never give Up!");
 #endif
       _neverGiveUp = true;
+      _openAlertLevel = OPEN_ALERT_REAL;
 
       if (!_inputs.Open)
       {
@@ -356,6 +590,7 @@ void notClosed()
 #ifdef _GARAGE_DEBUG
       Serial.println("notClosed() - ALERTWAIT");
 #endif
+      _openAlertLevel = OPEN_ALERT_FIRST;
       notClosedTask.setInterval(ALERTWAIT * 1000);
     }
 
@@ -513,6 +748,39 @@ void setup()
 
   pinMode(infinitePin, INPUT_PULLUP);
 
+  EEPROM.begin(512);
+
+  uint8_t initValue = EEPROM.read(eepromInitAddr);
+#ifdef _WEB_DEBUG
+  eepromInitValue = initValue;
+#endif
+
+  if (initValue != eepromInitData)
+  {
+#ifdef _WEB_DEBUG
+    eepromInit = true;
+#endif
+
+    EEPROM.write(eepromInitAddr, eepromInitData);
+    //EEPROMWritelong(eepromDataAddr, 0UL);
+
+    ResetAverage();
+  }
+
+  //unsigned long savedValue = EEPROMReadlong(eepromDataAddr);
+
+  unsigned long savedValue = 0UL;
+  EEPROM_readAnything(eepromDataAddr, savedValue);
+
+#ifdef _WEB_DEBUG
+  eepromInitDataValue = savedValue;
+#endif
+
+  if (savedValue > 0)
+  {
+    averageTimeOpen = savedValue;
+  }
+
   //Disconnect();
   Connect();
 
@@ -521,6 +789,9 @@ void setup()
   dht.begin();
 
   server.on("/", handle_root);
+  server.on("/state", handle_openAlert);
+  server.on("/ResetAverageOpen", handle_ResetAverageOpen);
+  server.on("/move", handle_Move);
 
   server.begin();
 
