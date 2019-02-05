@@ -61,8 +61,8 @@ unsigned long eepromInitDataValue = 0UL;
 #else
 
 // Wait door
-#define DOORWAIT 300 // 300:5min
-#define ALERTWAIT 60 // 60:1min
+#define DOORWAIT 3*60 // 3min
+#define ALERTWAIT 30 // 30:30sec
 
 #endif
 
@@ -779,6 +779,18 @@ void setup()
   if (savedValue > 0)
   {
     averageTimeOpen = savedValue;
+  }
+
+  unsigned long savedValueToOpen = 0UL;
+  EEPROM_readAnything(eepromDataOpenAddr, savedValueToOpen);
+
+#ifdef _WEB_DEBUG
+  eepromInitDataValue = savedValue;
+#endif
+
+  if (savedValueToOpen > 0)
+  {
+    averageTimeToOpen = savedValueToOpen;
   }
 
   //Disconnect();
